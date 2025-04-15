@@ -1,11 +1,14 @@
+# Authors:
+# Richard Li (rl902)
+# Wesley Zhou (wgz4)
+
 import socket
 import signal
 import sys
 import random
 
 # Read a command line argument for the port where the server
-# must run.
-port = 8080
+# must run.port = 8080
 if len(sys.argv) > 1:
     port = int(sys.argv[1])
 else:
@@ -61,13 +64,64 @@ def sigint_handler(sig, frame):
 # Register the signal handler
 signal.signal(signal.SIGINT, sigint_handler)
 
-
 # TODO: put your application logic here!
 # Read login credentials for all the users
 # Read secret data of all the users
 
+auth_map = {}     # username -> password
+secrets_map = {}  # username -> secret
 
+with open("passwords.txt", "r") as f:
+    for line in f:
+        line = line.strip()
+        if not line: 
+            continue
+        user, pwd = line.split()
+        auth_map[user] = pwd
 
+with open("secrets.txt", "r") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        user, secret = line.split()
+        secrets_map[user] = secret
+
+# Dictionary mapping session tokens to the username that was successfully authenticated
+session_map = {}  # token -> username
+
+def parse_cookie(headers):
+    """
+    Returns the token string if a valid Cookie: token=XYZ is found,
+    otherwise returns None.
+    """
+    cookie_line = None
+    for h in headers.split('\r\n'):
+        if h.lower().startswith("cookie:"):
+            cookie_line = h
+            break
+
+    if not cookie_line:
+        return None
+
+    cookie_part = cookie_line.split(":", 1)[1].strip() 
+    for part in cookie_part.split(";"):
+        part = part.strip()
+        if part.startswith("token="):
+            return part.split("=", 1)[1]
+    return None
+
+def parse_post_body(body):
+    post_dict = {}
+    if not body:
+        return post_dict
+
+    fields = body.split('&')
+    for kv in fields:
+        if '=' in kv:
+            key, val = kv.split('=', 1)
+            post_dict[key] = val
+    return post_dict
 
 ### Loop to accept incoming HTTP connections and respond.
 while True:
@@ -95,7 +149,19 @@ while True:
     # By default, as set up below, POSTing the form will
     # always send the request to the domain name returned by
     # socket.gethostname().
-    submit_hostport = "%s:%d" % (hostname, port)
+    host_header = None
+    for line in headers.split('\r\n'):
+        if line.lower().startswith("host:"):
+            host_header = line.split(":", 1)[1].strip()
+            break
+    if host_header:
+        submit_hostport = host_header
+    else:
+        submit_hostport = "%s:%d" % (hostname, port)
+
+    # Parse POST body and extract cookies
+    fields = parse_post_body(body)
+    token_from_cookie = parse_cookie(headers)
 
     # You need to set the variables:
     # (1) `html_content_to_send` => add the HTML content you'd
@@ -112,17 +178,55 @@ while True:
     # Right now, we don't send any extra headers.
     headers_to_send = ''
 
-    # Construct and send the final response
+    # (E) Logout
+    if fields.get("action") == "logout":
+        html_content_to_send = logout_page % submit_hostport
+        headers_to_send  = 'Set-Cookie: token=; expires=Thu, 01 Jan 1970 00:00:00 GMT\r\n'
+        if token_from_cookie and token_from_cookie in session_map:
+            del session_map[token_from_cookie]
+
+    else:
+        # (C) 
+        if token_from_cookie and token_from_cookie in session_map:
+            valid_user = session_map[token_from_cookie]
+            user_secret = secrets_map.get(valid_user, "No secret found.")
+            html_content_to_send = (success_page % submit_hostport) + user_secret
+
+        # (D) 
+        elif token_from_cookie and token_from_cookie not in session_map:
+            html_content_to_send = bad_creds_page % submit_hostport
+
+        # If no valid cookie is presented, process the username and password fields.
+        else:
+            if "username" in fields and "password" in fields:
+                username = fields["username"]
+                password = fields["password"]
+                if username in auth_map and auth_map[username] == password:
+                    user_secret = secrets_map.get(username, "No secret found.")
+                    html_content_to_send = (success_page % submit_hostport) + user_secret
+                    rand_val = random.getrandbits(64)
+                    token_str = str(rand_val)
+                    session_map[token_str] = username
+                    headers_to_send = 'Set-Cookie: token=' + token_str + '\r\n'
+                else:
+                    html_content_to_send = bad_creds_page % submit_hostport
+            else:
+                if ("username" in fields and "password" not in fields) or \
+                   ("password" in fields and "username" not in fields):
+                    html_content_to_send = bad_creds_page % submit_hostport
+
+    # Construct and send the final HTTP response.
     response  = 'HTTP/1.1 200 OK\r\n'
     response += headers_to_send
     response += 'Content-Type: text/html\r\n\r\n'
     response += html_content_to_send
-    print_value('response', response)    
+    print_value('response', response)
+
     client.send(response.encode())
     client.close()
-    
-    print("Served one request/connection!")
-    print()
+
+    print("Served one request/connection!\n")
+
 
 # We will never actually get here.
 # Close the listening socket
