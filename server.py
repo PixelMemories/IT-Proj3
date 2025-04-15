@@ -8,9 +8,13 @@ import sys
 import random
 
 # Read a command line argument for the port where the server
-# must run.port = 8080
+# must run.
+port = 8080
+public_host = None  # This will override the host to use in the form action.
 if len(sys.argv) > 1:
     port = int(sys.argv[1])
+    if len(sys.argv) > 2:
+        public_host = sys.argv[2]  # Optional: specify the public IP/hostname.
 else:
     print("Using default port 8080")
 hostname = socket.gethostname()
@@ -91,10 +95,6 @@ with open("secrets.txt", "r") as f:
 session_map = {}  # token -> username
 
 def parse_cookie(headers):
-    """
-    Returns the token string if a valid Cookie: token=XYZ is found,
-    otherwise returns None.
-    """
     cookie_line = None
     for h in headers.split('\r\n'):
         if h.lower().startswith("cookie:"):
@@ -149,15 +149,20 @@ while True:
     # By default, as set up below, POSTing the form will
     # always send the request to the domain name returned by
     # socket.gethostname().
-    host_header = None
-    for line in headers.split('\r\n'):
-        if line.lower().startswith("host:"):
-            host_header = line.split(":", 1)[1].strip()
-            break
-    if host_header:
-        submit_hostport = host_header
+
+    if public_host:
+        submit_hostport = f"{public_host}:{port}"
     else:
-        submit_hostport = "%s:%d" % (hostname, port)
+        # Otherwise, use the Host header if available.
+        host_header = None
+        for line in headers.split('\r\n'):
+            if line.lower().startswith("host:"):
+                host_header = line.split(":", 1)[1].strip()
+                break
+        if host_header:
+            submit_hostport = host_header
+        else:
+            submit_hostport = f"{hostname}:{port}"
 
     # Parse POST body and extract cookies
     fields = parse_post_body(body)
